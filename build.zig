@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     });
 
     module.addAssemblyFile(b.path("src/hells_gate.s"));
-    exe.subsystem = .Console;
+    exe.subsystem = .Windows;
 
     b.installArtifact(exe);
 

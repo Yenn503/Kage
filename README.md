@@ -6,15 +6,13 @@
 
 > 影に潜む
 
-Shellcode loader using indirect syscalls. Self-injection, jitter between steps.
+Shellcode loader using indirect syscalls. Self-injection, jitter between steps. Also Windowless proccess. 
 
 ## Build
 
 ```bash
 # 1. place your shellcode as valak.bin in this directory
-# 2. embed it into the source:
-python3 embed.py
-# 3. compile:
+# 2. compile:
 zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 # → zig-out/bin/kage.exe
 ```
@@ -48,7 +46,6 @@ src/
 ├── syscall.zig    Hell's Gate extraction + PEB ntdll finder
 ├── hells_gate.s   asm dispatch (XOR globals)
 build.zig
-embed.py           embeds valak.bin into main.zig
 ```
 
 ## License

