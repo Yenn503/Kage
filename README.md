@@ -6,7 +6,7 @@
 
 > 影に潜む
 
-Shellcode loader using indirect syscalls. Self-injection, FreshyCalls SSN extraction, random gadget pool, callstack spoofing, per-build XOR key, jitter.
+Shellcode loader using indirect syscalls. Self-injection, FreshyCalls SSN extraction, random gadget pool, callstack spoofing, per-build XOR key, jitter. Windowless.
 
 ## Why Zig
 
