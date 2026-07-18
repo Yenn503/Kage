@@ -35,4 +35,5 @@ hell_descent:
   push r9
 .Ldone:
   mov r9, rcx
+  mov rcx, r10
   jmp r11

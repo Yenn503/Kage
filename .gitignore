@@ -5,3 +5,4 @@ zig-out/
 docs/index.md
 valak.bin
 *.bin
+src/payload_enc.bin
