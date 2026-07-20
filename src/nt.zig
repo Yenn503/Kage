@@ -9,7 +9,6 @@ pub const MEM_COMMIT = 0x00001000;
 pub const MEM_RESERVE = 0x00002000;
 pub const PAGE_READWRITE = 0x04;
 pub const PAGE_EXECUTE_READ = 0x20;
-pub const THREAD_ALL_ACCESS = 0x1FFFFF;
 
 pub inline fn NT_SUCCESS(status: windows.NTSTATUS) bool {
     return @as(i32, @bitCast(@intFromEnum(status))) >= 0;
