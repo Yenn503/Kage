@@ -134,6 +134,7 @@ pub fn findExport(dll_base: [*]u8, name: []const u8) ?[*]u8 {
         const export_name = std.mem.sliceTo(export_name_ptr, 0);
 
         if (std.mem.eql(u8, export_name, name)) {
+            if (ords[i] >= exp.NumberOfFunctions) return null;
             const rva = funcs[ords[i]];
             return dll_base + rva;
         }

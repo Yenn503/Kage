@@ -6,11 +6,9 @@
 
 > 影に潜む
 
-Shellcode loader using indirect syscalls. Self-injection, FreshyCalls SSN extraction, random gadget pool, callstack spoofing, per-build XOR key, jitter. Windowless.
+Shellcode loader using indirect syscalls. Self-injection, RecycledGate SSN extraction, random gadget pool, callstack spoofing, per-build XOR key, jitter. Windowless.
 
-## Why Zig
-
-Zig's build system handles everything: random XOR key generation, build-time shellcode encryption, cross-compilation. One command, no external tools needed. No CRT linked, minimal import table.
+## Build
 
 ```bash
 # 1. drop your shellcode as src/payload.bin
@@ -22,7 +20,7 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 
 - **影探し** — ntdll via PEB walk (`gs:[0x60]`)
 - **闇渡り** — indirect syscall dispatch (64 random gadgets)
-- **血判** — FreshyCalls SSN extraction (sorted export RVA, immune to inline hooks)
+- **血判** — RecycledGate SSN extraction (FreshyCalls RVA sort + stub byte-scan + delta correction, hook-safe)
 - **封印** — build-time shellcode XOR with per-build 128-bit random key
 - **影纏い** — XOR-encoded asm dispatch globals + callstack spoofing
 
@@ -43,3 +41,12 @@ build.zig
 ## License
 
 MIT
+
+## Sophos Evasion
+
+Kage + Valak chain bypassing Sophos EDR with command execution:
+
+<p align="center">
+  <img src="assets/Sophos.png" alt="Sophos Bypass">
+  <img src="assets/whoami.png" alt="Command Execution">
+</p>

@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
         .name = "kage",
         .root_module = module,
     });
-    exe.subsystem = .Console;
+    exe.subsystem = .Console; // .console for debug output
 
     b.installArtifact(exe);
 

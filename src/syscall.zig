@@ -347,7 +347,7 @@ fn extract_pdata(ntdll: ?*anyopaque) void {
     g_exc_count = exc.Size / @sizeOf(RUNTIME_FUNCTION);
 }
 
-// ---- unified dispatch (replaces 5 wrapper functions in main.zig) ----
+// ---- indirect syscall dispatch ----
 
 extern fn hells_gate(ssn: u32, syscall_addr: usize, fake_return: usize) void;
 extern fn hell_descent(

