@@ -66,11 +66,11 @@ pub const RUNTIME_FUNCTION = extern struct {
 var g_exc_begin: usize = 0;
 var g_exc_count: usize = 0;
 
-var g_syscall_addrs: [64]usize = [_]usize{0} ** 64;
-var g_syscall_count: usize = 0;
-var g_ntdll_base: ?*anyopaque = null;
-var g_ntdll_size: usize = 0;
-var g_fake_return_addr: usize = 0;
+var g_syscall_addrs: [64]usize = [_]usize{0} ** 64; 
+var g_syscall_count: usize = 0; 
+var g_ntdll_base: ?*anyopaque = null; 
+var g_ntdll_size: usize = 0; 
+var g_fake_return_addr: usize = 0; 
 var g_rand_state: u64 = 0;
 
 // FreshyCalls table: ntdll Nt* exports sorted by RVA. SSN = sort position.
@@ -282,7 +282,9 @@ fn build_freshy_table(ntdll_base: ?*anyopaque) void {
     }
 
     std.mem.sort(FreshyEntry, g_freshy_entries[0..g_freshy_count], {}, struct {
-        fn lt(_: void, a: FreshyEntry, b: FreshyEntry) bool { return a.rva < b.rva; }
+        fn lt(_: void, a: FreshyEntry, b: FreshyEntry) bool {
+            return a.rva < b.rva;
+        }
     }.lt);
     g_freshy_ready = true;
 }
@@ -310,9 +312,11 @@ fn read_ssn_from_stub(ntdll_bytes: [*]const u8, name: []const u8) ?u16 {
     while (lo < hi) {
         const mid = lo + (hi - lo) / 2;
         const entry = funcs[mid];
-        if (func_rva < entry.BeginAddress) { hi = mid; }
-        else if (func_rva >= entry.EndAddress) { lo = mid + 1; }
-        else {
+        if (func_rva < entry.BeginAddress) {
+            hi = mid;
+        } else if (func_rva >= entry.EndAddress) {
+            lo = mid + 1;
+        } else {
             const start: u32 = entry.BeginAddress;
             const end: u32 = entry.EndAddress;
             const scan: [*]const u8 = @ptrCast(ntdll_bytes + start);
@@ -351,12 +355,21 @@ fn extract_pdata(ntdll: ?*anyopaque) void {
 
 extern fn hells_gate(ssn: u32, syscall_addr: usize, fake_return: usize) void;
 extern fn hell_descent(
-    a1: usize, a2: usize, a3: usize, a4: usize, a5: usize,
-    a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+    a5: usize,
+    a6: usize,
+    a7: usize,
+    a8: usize,
+    a9: usize,
+    a10: usize,
+    a11: usize,
 ) usize;
 
-// pick a random gadget from the pool and dispatch the syscall.
-// callstack spoofing: pushes a fake ret from ntdll so the kernel sees ntdll frames.
+// pick a random gadget from the pool, push a fake ret from ntdll so the
+// kernel stack walk shows ntdll frames, then dispatch.
 pub fn syscall_dispatch(ssn: u32, args: [*]const usize, arg_count: usize) usize {
     const idx = @as(usize, @truncate(xorshift64())) % g_syscall_count;
     const gadget = g_syscall_addrs[idx];

