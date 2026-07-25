@@ -1,4 +1,5 @@
-// peb walk, gadget pool scan, FreshyCalls SSN table.
+// peb walk, gadget pool scan, RecycledGate SSN extraction (byte-scan primary,
+// FreshyCalls + delta fallback), indirect syscall dispatch.
 const std = @import("std");
 const windows = std.os.windows;
 const nt = @import("nt.zig");
@@ -6,7 +7,7 @@ const pe = @import("pe.zig");
 
 pub const Entry = struct {
     number: u32,
-    gadget: *anyopaque, // set to g_syscall_addrs[0] but syscall_dispatch picks a random gadget from the pool — this field exists for struct completeness only
+    gadget: *anyopaque, // set by resolve() but syscall_dispatch picks a random gadget from the pool instead
 };
 
 // all resolved syscalls. resolve() peb-walks ntdll, builds freshy table,
@@ -19,10 +20,10 @@ pub const Syscalls = struct {
     pub fn resolve() ?Syscalls {
         const ntdll = findNtdll() orelse return null;
         // runtime setup — all runs every execution
-        seed_prng();                    // PRNG seed for random gadget selection
-        scan_gadget_pool(ntdll) orelse return null; // scan ntdll .text for syscall;ret gadgets
-        build_freshy_table(ntdll);      // Nt* exports sorted by RVA → FreshyCalls table
-        extract_pdata(ntdll);           // .pdata bounds for binary search per stub
+        seed_prng();
+        scan_gadget_pool(ntdll) orelse return null;
+        build_freshy_table(ntdll);
+        extract_pdata(ntdll);
 
         const names = [_][]const u8{
             "NtDelayExecution",
@@ -56,7 +57,7 @@ pub const Syscalls = struct {
     }
 };
 
-// ---- state ----
+//--------------------------------------------------------> STATE
 
 pub const RUNTIME_FUNCTION = extern struct {
     BeginAddress: u32,
@@ -81,7 +82,7 @@ var g_freshy_entries: [FRESHY_MAX]FreshyEntry = undefined;
 var g_freshy_count: usize = 0;
 var g_freshy_ready: bool = false;
 
-// ---- ror13 hash (case-insensitive, used by FreshyCalls + fallback) ----
+//--------------------------------------------------------> ROR13 HASH
 fn hash_ror13(input: []const u8) u32 {
     var hash: u32 = 0;
     for (input) |c| {
@@ -93,7 +94,7 @@ fn hash_ror13(input: []const u8) u32 {
     return hash;
 }
 
-// ---- prng ----
+//--------------------------------------------------------> PRNG
 
 fn xorshift64() u64 {
     var s = g_rand_state;
@@ -109,7 +110,7 @@ fn seed_prng() void {
     g_rand_state = @as(u64, @truncate(@intFromPtr(&stack_var)));
 }
 
-// ---- peb walk ----
+//--------------------------------------------------------> PEB WALK
 
 const PEB = extern struct {
     reserved1: [2]u8,
@@ -183,7 +184,7 @@ fn findNtdll() ?[*]u8 {
     return null;
 }
 
-// ---- gadget pool ----
+//--------------------------------------------------------> GADGET POOL
 
 fn scan_gadget_pool(ntdll_base: ?*anyopaque) ?void {
     const base = ntdll_base orelse return null;
@@ -232,7 +233,7 @@ fn scan_gadget_pool(ntdll_base: ?*anyopaque) ?void {
     if (g_syscall_count == 0) return null;
 }
 
-// ---- freshycalls ----
+//--------------------------------------------------------> FRESHYCALLS
 
 fn build_freshy_table(ntdll_base: ?*anyopaque) void {
     const base = ntdll_base orelse return;
@@ -326,7 +327,7 @@ fn read_ssn_from_stub(ntdll_bytes: [*]const u8, name: []const u8) ?u16 {
             const scan_len = @min(end - start, 96);
             var j: usize = 0;
             while (j + 4 < scan_len) : (j += 1) {
-                if (scan[j] == 0xB8) {
+                if (scan[j] == 0xB8) { // 0xB8 = mov eax, imm32 — the SSN follows in the next 4 bytes
                     const arr: *const [4]u8 = @ptrCast(scan[j + 1 ..][0..4]);
                     const ssn = std.mem.readInt(u32, arr, .little);
                     if ((ssn & 0xFFFF0000) == 0 and ssn > 0 and ssn < 0x1000) {
@@ -354,7 +355,7 @@ fn extract_pdata(ntdll: ?*anyopaque) void {
     g_exc_count = exc.Size / @sizeOf(RUNTIME_FUNCTION);
 }
 
-// ---- indirect syscall dispatch ----
+//--------------------------------------------------------> INDIRECT SYSCALL DISPATCH
 
 extern fn hells_gate(ssn: u32, syscall_addr: usize, fake_return: usize) void;
 extern fn hell_descent(

