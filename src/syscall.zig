@@ -6,7 +6,7 @@ const pe = @import("pe.zig");
 
 pub const Entry = struct {
     number: u32,
-    gadget: *anyopaque,
+    gadget: *anyopaque, // set to g_syscall_addrs[0] but syscall_dispatch picks a random gadget from the pool — this field exists for struct completeness only
 };
 
 // all resolved syscalls. resolve() peb-walks ntdll, builds freshy table,
@@ -18,10 +18,11 @@ pub const Syscalls = struct {
 
     pub fn resolve() ?Syscalls {
         const ntdll = findNtdll() orelse return null;
-        seed_prng();
-        scan_gadget_pool(ntdll) orelse return null;
-        build_freshy_table(ntdll);
-        extract_pdata(ntdll);
+        // runtime setup — all runs every execution
+        seed_prng();                    // PRNG seed for random gadget selection
+        scan_gadget_pool(ntdll) orelse return null; // scan ntdll .text for syscall;ret gadgets
+        build_freshy_table(ntdll);      // Nt* exports sorted by RVA → FreshyCalls table
+        extract_pdata(ntdll);           // .pdata bounds for binary search per stub
 
         const names = [_][]const u8{
             "NtDelayExecution",
@@ -66,11 +67,11 @@ pub const RUNTIME_FUNCTION = extern struct {
 var g_exc_begin: usize = 0;
 var g_exc_count: usize = 0;
 
-var g_syscall_addrs: [64]usize = [_]usize{0} ** 64; 
-var g_syscall_count: usize = 0; 
-var g_ntdll_base: ?*anyopaque = null; 
-var g_ntdll_size: usize = 0; 
-var g_fake_return_addr: usize = 0; 
+var g_syscall_addrs: [64]usize = [_]usize{0} ** 64;
+var g_syscall_count: usize = 0;
+var g_ntdll_base: ?*anyopaque = null;
+var g_ntdll_size: usize = 0;
+var g_fake_return_addr: usize = 0;
 var g_rand_state: u64 = 0;
 
 // FreshyCalls table: ntdll Nt* exports sorted by RVA. SSN = sort position.
@@ -270,6 +271,8 @@ fn build_freshy_table(ntdll_base: ?*anyopaque) void {
             base_bytes + @as(usize, @intCast(names[i])),
         )));
         const name = std.mem.sliceTo(name_ptr, 0);
+        // Nt*-only filter: real FreshyCalls sorts the full export table. filtering
+        // to Nt* shifts sort indices, but the uniform +4 delta in resolve() compensates.
         if (name.len < 2 or name[0] != 'N' or name[1] != 't') continue;
 
         const ordinal = ords[i];

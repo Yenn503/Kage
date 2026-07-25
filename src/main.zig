@@ -1,5 +1,6 @@
-// hells gate shellcode loader. self-injection, per-build random xor key, peb walk.
-// RecycledGate syscall resolution, direct call on main thread, then park forever.
+// indirect-syscall shellcode loader. self-injection, per-build random xor key,
+// RecycledGate SSN resolution (byte-scan primary, FreshyCalls + delta fallback),
+// random gadget pool dispatch, direct call on main thread, park forever.
 
 const std = @import("std");
 const windows = std.os.windows;

@@ -1,6 +1,8 @@
 // PE structures for export directory parsing. Used by syscall.zig to resolve SSNs.
 const std = @import("std");
 
+//--------------------------------------------------------> DOS HEADER
+// Offset 0x00. e_magic = 0x5A4D ("MZ"). e_lfanew points to NT headers.
 pub const IMAGE_DOS_HEADER = extern struct {
     e_magic: u16,
     e_cblp: u16,
@@ -71,6 +73,8 @@ pub const IMAGE_OPTIONAL_HEADER64 = extern struct {
     DataDirectory: [16]IMAGE_DATA_DIRECTORY,
 };
 
+//--------------------------------------------------------> NT HEADERS
+
 pub const IMAGE_NT_HEADERS = IMAGE_NT_HEADERS64;
 
 pub const IMAGE_NT_HEADERS64 = extern struct {
@@ -79,6 +83,7 @@ pub const IMAGE_NT_HEADERS64 = extern struct {
     OptionalHeader: IMAGE_OPTIONAL_HEADER64,
 };
 
+//--------------------------------------------------------> SECTION HEADER
 // needed for FreshyCalls table + gadget pool scan.
 pub const IMAGE_SECTION_HEADER = extern struct {
     Name: [8]u8,
@@ -92,6 +97,8 @@ pub const IMAGE_SECTION_HEADER = extern struct {
     NumberOfLinenumbers: u16,
     Characteristics: u32,
 };
+
+//--------------------------------------------------------> EXPORT DIRECTORY
 
 pub const IMAGE_EXPORT_DIRECTORY = extern struct {
     Characteristics: u32,
@@ -107,6 +114,7 @@ pub const IMAGE_EXPORT_DIRECTORY = extern struct {
     AddressOfNameOrdinals: u32,
 };
 
+//--------------------------------------------------------> FIND EXPORT
 // walk the export directory of a PE module, find a named export, return its address.
 pub fn findExport(dll_base: [*]u8, name: []const u8) ?[*]u8 {
     const dos = @as(*const IMAGE_DOS_HEADER, @ptrCast(@alignCast(dll_base)));
