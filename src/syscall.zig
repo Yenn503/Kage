@@ -1,13 +1,11 @@
 // peb walk, gadget pool scan, RecycledGate SSN extraction (byte-scan primary,
 // FreshyCalls + delta fallback), indirect syscall dispatch.
 const std = @import("std");
-const windows = std.os.windows;
-const nt = @import("nt.zig");
 const pe = @import("pe.zig");
+const print = std.debug.print;
 
 pub const Entry = struct {
     number: u32,
-    gadget: *anyopaque, // set by resolve() but syscall_dispatch picks a random gadget from the pool instead
 };
 
 // all resolved syscalls. resolve() peb-walks ntdll, builds freshy table,
@@ -19,7 +17,7 @@ pub const Syscalls = struct {
 
     pub fn resolve() ?Syscalls {
         const ntdll = findNtdll() orelse return null;
-        // runtime setup — all runs every execution
+        print("[+] found ntdll   : 0x{X}\n", .{@intFromPtr(ntdll)});
         seed_prng();
         scan_gadget_pool(ntdll) orelse return null;
         build_freshy_table(ntdll);
@@ -48,9 +46,9 @@ pub const Syscalls = struct {
                     delta = @as(i16, @intCast(b)) - @as(i16, @intCast(fssn));
                     delta_done = true;
                 }
-                @field(result, name) = Entry{ .number = b, .gadget = @ptrFromInt(g_syscall_addrs[0]) };
+                @field(result, name) = Entry{ .number = b };
             } else {
-                @field(result, name) = Entry{ .number = @intCast(@as(i16, @intCast(fssn)) + delta), .gadget = @ptrFromInt(g_syscall_addrs[0]) };
+                @field(result, name) = Entry{ .number = @intCast(@as(i16, @intCast(fssn)) + delta) };
             }
         }
         return result;
@@ -70,8 +68,6 @@ var g_exc_count: usize = 0;
 
 var g_syscall_addrs: [64]usize = [_]usize{0} ** 64;
 var g_syscall_count: usize = 0;
-var g_ntdll_base: ?*anyopaque = null;
-var g_ntdll_size: usize = 0;
 var g_fake_return_addr: usize = 0;
 var g_rand_state: u64 = 0;
 
@@ -105,6 +101,7 @@ fn xorshift64() u64 {
     return s;
 }
 
+// stack address as low-entropy seed, good enough for gadget selection.
 fn seed_prng() void {
     var stack_var: u64 = 0;
     g_rand_state = @as(u64, @truncate(@intFromPtr(&stack_var)));
@@ -146,6 +143,7 @@ const LDR_DATA_TABLE_ENTRY = extern struct {
     base_dll_name: extern struct { length: u16, maximum_length: u16, buffer: [*]u16 },
 };
 
+// PEB walk via gs:[0x60] — avoids hooked GetModuleHandle / LdrLoadDll.
 fn findNtdll() ?[*]u8 {
     const peb_addr: usize = asm volatile ("mov %%gs:0x60, %[r]"
         : [r] "=r" (-> usize),
@@ -157,47 +155,22 @@ fn findNtdll() ?[*]u8 {
     while (entry != head) : (entry = entry.flink) {
         const mod: *LDR_DATA_TABLE_ENTRY = @fieldParentPtr("in_memory_order_links", entry);
         if (@intFromPtr(mod.dll_base) == 0) continue;
-
-        const dos = @as(*align(1) const pe.IMAGE_DOS_HEADER, @ptrFromInt(@intFromPtr(mod.dll_base)));
-        if (dos.e_magic != 0x5A4D) continue;
-
-        const nt_hdrs = @as(*align(1) const pe.IMAGE_NT_HEADERS, @ptrFromInt(
-            @intFromPtr(mod.dll_base) + @as(usize, @intCast(dos.e_lfanew)),
-        ));
-        if (nt_hdrs.Signature != 0x00004550) continue;
-
-        const exp_dir = nt_hdrs.OptionalHeader.DataDirectory[0];
-        if (exp_dir.VirtualAddress == 0) continue;
-
-        const exp = @as(*align(1) const pe.IMAGE_EXPORT_DIRECTORY, @ptrFromInt(
-            @intFromPtr(mod.dll_base) + @as(usize, @intCast(exp_dir.VirtualAddress)),
-        ));
-        const name_ptr = @as([*:0]const u8, @ptrFromInt(
-            @intFromPtr(mod.dll_base) + @as(usize, @intCast(exp.Name)),
-        ));
-        if (std.mem.eql(u8, std.mem.sliceTo(name_ptr, 0), "ntdll.dll")) {
-            g_ntdll_base = @ptrFromInt(@intFromPtr(mod.dll_base));
-            g_ntdll_size = mod.size_of_image;
-            return @ptrFromInt(@intFromPtr(mod.dll_base));
+        // UNICODE_STRING length is bytes — halve for u16 element count
+        const name = mod.base_dll_name.buffer[0 .. mod.base_dll_name.length / 2];
+        if (std.mem.eql(u16, name, &[_]u16{ 'n', 't', 'd', 'l', 'l', '.', 'd', 'l', 'l' })) {
+            return @ptrCast(mod.dll_base);
         }
     }
     return null;
 }
-
 //--------------------------------------------------------> GADGET POOL
 
 fn scan_gadget_pool(ntdll_base: ?*anyopaque) ?void {
     const base = ntdll_base orelse return null;
     const base_bytes: [*]const u8 = @ptrCast(base);
-    const dos = @as(*align(1) const pe.IMAGE_DOS_HEADER, @ptrCast(@alignCast(base_bytes)));
-    if (dos.e_magic != 0x5A4D) return null;
+    const nt_hdrs = pe.getNtHeaders(base_bytes) orelse return null;
 
-    const nt_hdrs = @as(*align(1) const pe.IMAGE_NT_HEADERS, @ptrCast(@alignCast(
-        base_bytes + @as(usize, @intCast(dos.e_lfanew)),
-    )));
-    if (nt_hdrs.Signature != 0x00004550) return null;
-
-    const section_off = @as(usize, @intCast(dos.e_lfanew)) + @sizeOf(pe.IMAGE_NT_HEADERS64);
+    const section_off = @intFromPtr(nt_hdrs) - @intFromPtr(base_bytes) + @sizeOf(pe.IMAGE_NT_HEADERS64);
     const sections = @as([*]align(1) const pe.IMAGE_SECTION_HEADER, @ptrCast(@alignCast(
         @as([*]u8, @ptrCast(@constCast(base_bytes))) + section_off,
     )));
@@ -218,7 +191,7 @@ fn scan_gadget_pool(ntdll_base: ?*anyopaque) ?void {
     var j: usize = text_va;
     const scan_end: usize = text_va + text_size;
     while (j < scan_end - 3 and g_syscall_count < g_syscall_addrs.len) : (j += 1) {
-        // syscall; ret = 0F 05 C3
+        // syscall; ret byte sequence
         if (base_bytes[j] == 0x0F and base_bytes[j + 1] == 0x05 and base_bytes[j + 2] == 0xC3) {
             g_syscall_addrs[g_syscall_count] = @intFromPtr(&base_bytes[j]);
             g_syscall_count += 1;
@@ -238,13 +211,7 @@ fn scan_gadget_pool(ntdll_base: ?*anyopaque) ?void {
 fn build_freshy_table(ntdll_base: ?*anyopaque) void {
     const base = ntdll_base orelse return;
     const base_bytes: [*]u8 = @ptrCast(base);
-    const dos = @as(*align(1) const pe.IMAGE_DOS_HEADER, @ptrCast(@alignCast(base_bytes)));
-    if (dos.e_magic != 0x5A4D) return;
-
-    const nt_hdrs = @as(*align(1) const pe.IMAGE_NT_HEADERS, @ptrCast(@alignCast(
-        base_bytes + @as(usize, @intCast(dos.e_lfanew)),
-    )));
-    if (nt_hdrs.Signature != 0x00004550) return;
+    const nt_hdrs = pe.getNtHeaders(base_bytes) orelse return;
 
     const export_dir = nt_hdrs.OptionalHeader.DataDirectory[0];
     if (export_dir.VirtualAddress == 0 or export_dir.Size == 0) return;
@@ -307,7 +274,7 @@ fn extract_ssn(func_hash: u32) ?u16 {
 // read the actual SSN from the syscall stub by scanning its .pdata range.
 // works across hooks by using the function's RUNTIME_FUNCTION boundaries.
 fn read_ssn_from_stub(ntdll_bytes: [*]const u8, name: []const u8) ?u16 {
-    const addr = pe.findExport(@constCast(ntdll_bytes), name) orelse return null;
+    const addr = pe.findExport(ntdll_bytes, name) orelse return null;
     if (g_exc_begin == 0 or g_exc_count == 0) return null;
     const func_rva: u32 = @truncate(@intFromPtr(addr) - @intFromPtr(ntdll_bytes));
     const funcs: [*]align(1) const RUNTIME_FUNCTION = @ptrFromInt(g_exc_begin);
@@ -345,10 +312,7 @@ fn read_ssn_from_stub(ntdll_bytes: [*]const u8, name: []const u8) ?u16 {
 fn extract_pdata(ntdll: ?*anyopaque) void {
     const base = ntdll orelse return;
     const bytes: [*]const u8 = @ptrCast(base);
-    const dos = @as(*align(1) const pe.IMAGE_DOS_HEADER, @ptrCast(@alignCast(bytes)));
-    if (dos.e_magic != 0x5A4D) return;
-    const nt_hdrs = @as(*align(1) const pe.IMAGE_NT_HEADERS, @ptrCast(@alignCast(bytes + @as(usize, @intCast(dos.e_lfanew)))));
-    if (nt_hdrs.Signature != 0x00004550) return;
+    const nt_hdrs = pe.getNtHeaders(bytes) orelse return;
     const exc = nt_hdrs.OptionalHeader.DataDirectory[3];
     if (exc.VirtualAddress == 0 or exc.Size == 0) return;
     g_exc_begin = @intFromPtr(bytes) + exc.VirtualAddress;

@@ -114,16 +114,22 @@ pub const IMAGE_EXPORT_DIRECTORY = extern struct {
     AddressOfNameOrdinals: u32,
 };
 
+//--------------------------------------------------------> PE HELPERS
+
+pub fn getNtHeaders(base: [*]const u8) ?*align(1) const IMAGE_NT_HEADERS {
+    const dos = @as(*align(1) const IMAGE_DOS_HEADER, @ptrCast(@alignCast(base)));
+    if (dos.e_magic != 0x5A4D) return null;
+    const nth = @as(*align(1) const IMAGE_NT_HEADERS, @ptrCast(@alignCast(
+        base + @as(usize, @intCast(dos.e_lfanew)),
+    )));
+    if (nth.Signature != 0x00004550) return null;
+    return nth;
+}
+
 //--------------------------------------------------------> FIND EXPORT
 // walk the export directory of a PE module, find a named export, return its address.
-pub fn findExport(dll_base: [*]u8, name: []const u8) ?[*]u8 {
-    const dos = @as(*const IMAGE_DOS_HEADER, @ptrCast(@alignCast(dll_base)));
-    if (dos.e_magic != 0x5A4D) return null;
-
-    const nt_hdrs = @as(*const IMAGE_NT_HEADERS64, @ptrCast(@alignCast(
-        dll_base + @as(usize, @intCast(dos.e_lfanew)),
-    )));
-    if (nt_hdrs.Signature != 0x00004550) return null;
+pub fn findExport(dll_base: [*]const u8, name: []const u8) ?[*]const u8 {
+    const nt_hdrs = getNtHeaders(dll_base) orelse return null;
 
     const export_dir_rva = nt_hdrs.OptionalHeader.DataDirectory[0];
     if (export_dir_rva.VirtualAddress == 0) return null;

